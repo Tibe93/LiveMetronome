@@ -11,6 +11,7 @@ import {
   exportAllSetlistsAsJson,
   importSetlistJson,
 } from '@/lib/storage/setlistStorage';
+import { APP_VERSION, APP_BUILD_DATE } from '@/lib/version';
 import {
   BeatEvent,
   Setlist,
@@ -448,7 +449,7 @@ export default function Home() {
   }, [isPlaying, isListening, activeSongs, currentSongIndex, bpm, timeSignature, subdivision, soundPreset, volume]);
 
   return (
-    <main className="min-h-screen bg-[#08090d] text-zinc-100 flex flex-col items-center justify-start p-3 md:p-6 pb-20 max-w-2xl mx-auto gap-4">
+    <main className="min-h-screen w-full max-w-2xl mx-auto overflow-x-hidden bg-[#08090d] text-zinc-100 flex flex-col items-center justify-start p-3 md:p-6 pb-20 gap-4">
       {/* Banner Installazione iPhone PWA */}
       <InstallPwaBanner />
 
@@ -569,12 +570,22 @@ export default function Home() {
         onImportFile={handleImportFile}
       />
 
-      {/* Footer Scorciatoie */}
-      <footer className="w-full text-center text-[11px] text-zinc-400 pt-3 flex flex-wrap justify-center gap-x-4 gap-y-1">
-        <span><kbd className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300 font-mono text-[10px]">Spazio</kbd> Play/Stop</span>
-        <span><kbd className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300 font-mono text-[10px">→</kbd> Brano Successivo</span>
-        <span><kbd className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300 font-mono text-[10px]">←</kbd> Brano Precedente</span>
-        <span><kbd className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300 font-mono text-[10px]">M</kbd> Toggle Mic</span>
+      {/* Footer Scorciatoie + Badge Versione */}
+      <footer className="w-full text-center text-[11px] text-zinc-400 pt-3 flex flex-col items-center gap-2">
+        <div className="flex flex-wrap justify-center gap-x-4 gap-y-1">
+          <span><kbd className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300 font-mono text-[10px]">Spazio</kbd> Play/Stop</span>
+          <span><kbd className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300 font-mono text-[10px]">→</kbd> Brano Successivo</span>
+          <span><kbd className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300 font-mono text-[10px]">←</kbd> Brano Precedente</span>
+          <span><kbd className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300 font-mono text-[10px]">M</kbd> Toggle Mic</span>
+        </div>
+        {/* Badge versione — per verificare rapidamente se l'app è aggiornata */}
+        <div className="flex items-center gap-1.5 text-[10px] font-mono">
+          <span className="px-2 py-0.5 rounded-full bg-zinc-900 border border-zinc-800 text-zinc-500">
+            v{APP_VERSION}
+          </span>
+          <span className="text-zinc-700">·</span>
+          <span className="text-zinc-700">{APP_BUILD_DATE}</span>
+        </div>
       </footer>
     </main>
   );

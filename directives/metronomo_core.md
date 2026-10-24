@@ -13,16 +13,17 @@ Su browser mobili (iOS Safari), l'Event Loop di JavaScript subisce jitter a caus
 3. **Sincronizzazione Visiva**:
    - Gli eventi visivi (cambio beat, flash visivo) vengono emessi tramite `requestAnimationFrame` confrontando il tempo corrente con il tempo del beat schedulato, garantendo un perfetto sync audio-visivo a 60/120 Hz (ProMotion su iPhone).
 
-## Funzionalità
-- **Range BPM**: 30 - 300 BPM con controlli rapidi (+1, -1, +5, -5, slider, direct input).
-- **Tap Tempo**: Algoritmo a media mobile con reset automatico dopo 2 secondi di inattività.
-- **Metriche (Time Signatures)**: 2/4, 3/4, 4/4, 5/4, 6/8, 7/8, 12/8 con accenti configurabili (primo beat marcato).
-- **Suddivisioni Ritmiche**:
-  - Quarti (1/4)
-  - Ottavi (1/8)
-  - Sedicesimi (1/16)
-  - Terzine (1/8T)
-  - Swing/Shuffle regolabile
+## Gestione Audio iOS Safari (Modalità Silenzioso & Volume)
+1. **Bypass Interruttore Silenzioso iOS (Mute Switch)**:
+   - Di default, l'AudioContext in Safari viene classificato come sessione `Ambient` e viene silenziato se l'interruttore fisico di silenzioso è attivo.
+   - Per bypassare il silenzioso e farsi sentire sempre come un'app di riproduzione musicale, si impiega un tag HTML5 `<audio>` invisibile con loop inaudibile e categoria di riproduzione `Playback`.
+2. **Prevenzione Abbassamento Volume con Microfono (Voice Ducking)**:
+   - All'attivazione di `getUserMedia`, iOS Safari commuta l'audio session su `PlayAndRecord`, attenuando l'uscita altoparlante.
+   - Per contrastare questo calo:
+     - Inserire una catena di Master Dynamics Compressor (`DynamicsCompressorNode`) e Boost Gain (guadagno 2.5x - 4x con soft clipping) per rendere il click percussivo estremamente penetrante e ad alto volume.
+     - Ottimizzare la sintesi con transitori ad alta pressione sonora.
+3. **Persistenza Stream Microfono**:
+   - Mantenere lo stream audio attivo disabilitando i track (`track.enabled = false`) anziché chiamare `track.stop()`, evitando di richiedere nuovamente l'autorizzazione all'utente ogni volta che attiva/disattiva il microfono.
 - **Sintesi Sonora Client-Side (Zero Asset Lag)**:
   - *Woodblock*: Oscillatore a onda quadra/sinusoidale filtrata a 800Hz / 1200Hz con decadimento esponenziale ultra-rapido.
   - *Digital Beep*: Onda sinusoidale pura (880Hz / 440Hz) ad alto impatto.

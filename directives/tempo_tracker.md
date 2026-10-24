@@ -23,7 +23,10 @@ Ascoltare l'ambiente acustico tramite il microfono dell'iPhone/dispositivo duran
 ## Visualizzazione Canvas 60fps Fluida e Modalità Fullscreen
 - **Disaccoppiamento da React**: Il rendering del Canvas gira in un loop `requestAnimationFrame` continuo a 60fps/120fps, alimentato da un ring buffer mutabile, eliminando i rallentamenti e gli scatti dei re-render di React.
 - **Scorrimento Orizzontale Continuo**: Il tempo scorre linearmente con interpolazione morbida (curva continua e morbida anziché spezzata a scatti).
-- **Modalità Palco Fullscreen**:
-  - Sezione superiore: BPM attuali giganti con scostamento e colore di stato (Verde, Giallo, Rosso).
-  - Sezione centrale: Grafico a tutta larghezza/altezza con linea del target e griglia.
-  - Sezione inferiore: Titolo brano, BPM di riferimento e tasti di cambio rapido brano.
+- **Modalità Palco Fullscreen & Ergonomia iOS**:
+  - Blocco dello scrolling dello sfondo (`overscroll-behavior: none`, `touch-action: none`, `overflow: hidden`) per evitare l'effetto rubber-banding di Safari.
+  - Rispetto dei safe area insets di iPhone (Notch, Dynamic Island e Home Bar) con padding dinamico.
+  - Pulsante di uscita evidente e comodo per disattivare la visualizzazione a tutto schermo con un singolo tocco.
+  - Supporto per il flash visivo del metronomo anche in modalità a tutto schermo (overlay z-index superiore).
+- **Persistenza Permessi Microfono**:
+  - Mantenimento del MediaStream riutilizzabile durante la sessione, disattivando temporaneamente i nodi anziché rilasciare la traccia, così da non richiedere nuovamente i permessi a ogni toggle.

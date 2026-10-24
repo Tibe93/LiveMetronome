@@ -9,9 +9,8 @@ import {
   Trash2,
   Sliders,
   Maximize2,
-  Minimize2,
+  X,
   Drum,
-  Volume2,
   SkipBack,
   SkipForward,
 } from 'lucide-react';
@@ -35,6 +34,8 @@ interface TempoTrackerGraphProps {
   currentSong: Song | null;
   onNextSong?: () => void;
   onPrevSong?: () => void;
+  isPlaying?: boolean;
+  onTogglePlay?: () => void;
   error?: string | null;
 }
 
@@ -56,13 +57,15 @@ export const TempoTrackerGraph: React.FC<TempoTrackerGraphProps> = ({
   currentSong,
   onNextSong,
   onPrevSong,
+  isPlaying,
+  onTogglePlay,
   error,
 }) => {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const inlineCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const fullscreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  // Buffer mutabile per disaccoppiare il render 60fps dai cicli di stato React
+  // Buffer mutabile per disaccoppiare il rendering 60fps dai cicli di render React
   const historyRef = useRef<TrackerPoint[]>([]);
   historyRef.current = history;
   const targetBpmRef = useRef<number>(targetBpm);
@@ -70,7 +73,37 @@ export const TempoTrackerGraph: React.FC<TempoTrackerGraphProps> = ({
   const isListeningRef = useRef<boolean>(isListening);
   isListeningRef.current = isListening;
 
-  // Calcolo scostamento
+  // Blocco totale dello scroll del body quando in Fullscreen (evita rubber-banding su iOS)
+  useEffect(() => {
+    if (isFullscreen) {
+      const originalOverflow = document.body.style.overflow;
+      const originalPosition = document.body.style.position;
+      const originalWidth = document.body.style.width;
+      const originalTouchAction = document.body.style.touchAction;
+
+      document.body.style.overflow = 'hidden';
+      document.body.style.position = 'fixed';
+      document.body.style.width = '100%';
+      document.body.style.touchAction = 'none';
+
+      const handleKeyDown = (e: KeyboardEvent) => {
+        if (e.key === 'Escape') {
+          setIsFullscreen(false);
+        }
+      };
+      window.addEventListener('keydown', handleKeyDown);
+
+      return () => {
+        document.body.style.overflow = originalOverflow;
+        document.body.style.position = originalPosition;
+        document.body.style.width = originalWidth;
+        document.body.style.touchAction = originalTouchAction;
+        window.removeEventListener('keydown', handleKeyDown);
+      };
+    }
+  }, [isFullscreen]);
+
+  // Calcolo scostamento rispetto al target
   const drift = detectedBpm !== null ? detectedBpm - targetBpm : null;
 
   let statusText = 'In attesa di battito...';
@@ -102,7 +135,7 @@ export const TempoTrackerGraph: React.FC<TempoTrackerGraphProps> = ({
     }
   }
 
-  // Disegno continuo a 60fps / 120fps su Canvas
+  // Disegno continuo Canvas a 60fps / 120fps (ProMotion iOS)
   const renderCanvas = useCallback((canvas: HTMLCanvasElement) => {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
@@ -119,10 +152,10 @@ export const TempoTrackerGraph: React.FC<TempoTrackerGraphProps> = ({
     ctx.save();
     ctx.scale(dpr, dpr);
 
-    // Sfondo dark stage
+    // Gradiente sfondo stage dark
     const bgGrad = ctx.createLinearGradient(0, 0, 0, height);
-    bgGrad.addColorStop(0, '#0d0f17');
-    bgGrad.addColorStop(1, '#07080d');
+    bgGrad.addColorStop(0, '#0c0e16');
+    bgGrad.addColorStop(1, '#06070b');
     ctx.fillStyle = bgGrad;
     ctx.fillRect(0, 0, width, height);
 
@@ -130,7 +163,6 @@ export const TempoTrackerGraph: React.FC<TempoTrackerGraphProps> = ({
     const target = targetBpmRef.current;
     const listening = isListeningRef.current;
 
-    // Range Y centrato sul Target ± 22 BPM
     const yRange = 22;
     const yMin = target - yRange;
     const yMax = target + yRange;
@@ -151,16 +183,16 @@ export const TempoTrackerGraph: React.FC<TempoTrackerGraphProps> = ({
       ctx.lineTo(width, y);
       ctx.stroke();
 
-      ctx.fillStyle = b === target ? 'rgba(56, 189, 248, 0.8)' : 'rgba(113, 113, 122, 0.45)';
+      ctx.fillStyle = b === target ? 'rgba(56, 189, 248, 0.85)' : 'rgba(113, 113, 122, 0.45)';
       ctx.font = '10px monospace';
       ctx.textAlign = 'left';
       ctx.fillText(`${b}`, 8, y - 3);
     }
 
-    // Fascia di tolleranza verde smeraldo (±2 BPM dal target)
+    // Fascia di tolleranza verde smeraldo (±2 BPM)
     const yUpper = bpmToY(target + 2);
     const yLower = bpmToY(target - 2);
-    ctx.fillStyle = 'rgba(16, 185, 129, 0.09)';
+    ctx.fillStyle = 'rgba(16, 185, 129, 0.1)';
     ctx.fillRect(0, yUpper, width, yLower - yUpper);
 
     // Linea TARGET tratteggiata ciano
@@ -194,12 +226,12 @@ export const TempoTrackerGraph: React.FC<TempoTrackerGraphProps> = ({
       return;
     }
 
-    // Curva fluida dei punti storici
-    const maxVisible = 60;
+    // Curva fluida spline
+    const maxVisible = 65;
     const displayPoints = hist.slice(-maxVisible);
 
     if (displayPoints.length >= 2) {
-      ctx.lineWidth = 3;
+      ctx.lineWidth = 3.5;
       ctx.beginPath();
 
       const paddingLeft = 32;
@@ -212,7 +244,6 @@ export const TempoTrackerGraph: React.FC<TempoTrackerGraphProps> = ({
         drift: pt.drift,
       }));
 
-      // Disegna curva morbida spline
       ctx.moveTo(coords[0].x, coords[0].y);
       for (let i = 0; i < coords.length - 1; i++) {
         const xc = (coords[i].x + coords[i + 1].x) / 2;
@@ -224,30 +255,29 @@ export const TempoTrackerGraph: React.FC<TempoTrackerGraphProps> = ({
 
       const lastDrift = Math.abs(lastCoord.drift);
       if (lastDrift <= 2.0) {
-        ctx.strokeStyle = '#10b981'; // Smeraldo
+        ctx.strokeStyle = '#10b981';
       } else if (lastDrift <= 5.0) {
-        ctx.strokeStyle = '#f59e0b'; // Ambra
+        ctx.strokeStyle = '#f59e0b';
       } else {
-        ctx.strokeStyle = '#f43f5e'; // Rosso
+        ctx.strokeStyle = '#f43f5e';
       }
       ctx.stroke();
 
-      // Punto finale con alone luminoso
+      // Punto finale pulsante
       ctx.fillStyle = ctx.strokeStyle;
       ctx.beginPath();
-      ctx.arc(lastCoord.x, lastCoord.y, 6, 0, Math.PI * 2);
+      ctx.arc(lastCoord.x, lastCoord.y, 6.5, 0, Math.PI * 2);
       ctx.fill();
 
       ctx.fillStyle = ctx.strokeStyle + '33';
       ctx.beginPath();
-      ctx.arc(lastCoord.x, lastCoord.y, 14, 0, Math.PI * 2);
+      ctx.arc(lastCoord.x, lastCoord.y, 15, 0, Math.PI * 2);
       ctx.fill();
     }
 
     ctx.restore();
   }, []);
 
-  // Loop di rendering decoupled a 60fps
   useEffect(() => {
     let animId: number;
     const loop = () => {
@@ -266,33 +296,43 @@ export const TempoTrackerGraph: React.FC<TempoTrackerGraphProps> = ({
   return (
     <>
       {/* ============================================================ */}
-      {/* MODALITÀ A SCHERMO INTERO (STAGE FULLSCREEN)                   */}
+      {/* MODALITÀ A SCHERMO INTERO (STAGE FULLSCREEN PRO)              */}
       {/* ============================================================ */}
       {isFullscreen && (
-        <div className="fixed inset-0 z-50 bg-[#07080d] text-white flex flex-col p-4 md:p-6 justify-between animate-in fade-in duration-200">
-          {/* Sezione Superiore: BPM Giganti & Scostamento */}
-          <div className="flex items-center justify-between border-b border-zinc-800/80 pb-3">
-            <div className="flex items-center gap-4">
+        <div
+          onTouchMove={(e) => e.stopPropagation()}
+          className="fixed inset-0 z-[100] bg-[#07080d] text-white flex flex-col justify-between overflow-hidden overscroll-none touch-none select-none"
+          style={{
+            paddingTop: 'max(env(safe-area-inset-top, 0px), 14px)',
+            paddingBottom: 'max(env(safe-area-inset-bottom, 0px), 14px)',
+            paddingLeft: 'max(env(safe-area-inset-left, 0px), 14px)',
+            paddingRight: 'max(env(safe-area-inset-right, 0px), 14px)',
+          }}
+        >
+          {/* Sezione Superiore: BPM Giganti, Scostamento e Pulsante ESCI Evidente */}
+          <div className="flex items-center justify-between border-b border-zinc-800/80 pb-3 gap-2">
+            <div className="flex items-center gap-3 md:gap-5 flex-wrap">
+              {/* Riquadro BPM Attuali */}
               <div className="flex flex-col">
-                <span className="text-[11px] font-bold tracking-widest uppercase text-zinc-400">
+                <span className="text-[10px] font-bold tracking-widest uppercase text-zinc-400">
                   BPM LIVE
                 </span>
-                <div className="flex items-baseline gap-2">
-                  <span className="text-6xl md:text-7xl font-black font-mono tracking-tight text-white drop-shadow-[0_0_25px_rgba(255,255,255,0.2)]">
+                <div className="flex items-baseline gap-1.5">
+                  <span className="text-5xl md:text-7xl font-black font-mono tracking-tight text-white drop-shadow-[0_0_20px_rgba(255,255,255,0.2)]">
                     {detectedBpm !== null ? detectedBpm.toFixed(1) : '--'}
                   </span>
-                  <span className="text-sm text-zinc-400 font-bold">BPM</span>
+                  <span className="text-xs text-zinc-400 font-bold">BPM</span>
                 </div>
               </div>
 
-              {/* Scostamento e status badge */}
-              <div className="flex flex-col ml-3">
-                <span className="text-[11px] font-bold tracking-widest uppercase text-zinc-400">
+              {/* Riquadro Scostamento */}
+              <div className="flex flex-col">
+                <span className="text-[10px] font-bold tracking-widest uppercase text-zinc-400">
                   SCOSTAMENTO
                 </span>
-                <div className="flex items-center gap-2 mt-1">
+                <div className="flex items-center gap-2">
                   <span
-                    className={`text-4xl md:text-5xl font-black font-mono tracking-tight ${
+                    className={`text-3xl md:text-5xl font-black font-mono tracking-tight ${
                       drift === null
                         ? 'text-zinc-500'
                         : Math.abs(drift) <= 2
@@ -305,7 +345,7 @@ export const TempoTrackerGraph: React.FC<TempoTrackerGraphProps> = ({
                     {drift !== null ? (drift > 0 ? `+${drift.toFixed(1)}` : drift.toFixed(1)) : '0.0'}
                   </span>
                   <div
-                    className={`px-3 py-1.5 rounded-xl border text-xs font-bold uppercase ${badgeBg} ${statusColor}`}
+                    className={`px-2.5 py-1 rounded-xl border text-[11px] font-bold uppercase ${badgeBg} ${statusColor}`}
                   >
                     {statusText}
                   </div>
@@ -313,56 +353,46 @@ export const TempoTrackerGraph: React.FC<TempoTrackerGraphProps> = ({
               </div>
             </div>
 
-            {/* Azioni top destra */}
-            <div className="flex items-center gap-3">
-              <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-zinc-900 border border-zinc-800 text-xs">
-                <div
-                  className={`w-3.5 h-3.5 rounded-full transition-transform ${
-                    isHit ? 'bg-emerald-400 scale-125 shadow-[0_0_12px_#34d399]' : 'bg-zinc-700'
-                  }`}
-                />
-                <span className="font-mono text-zinc-400">
-                  {trackerMode === 'electronic' ? '⚡ E-Drums' : '🥁 Acoustic'}
-                </span>
-              </div>
-
+            {/* Pulsante ESCI Immediato ed Evidente */}
+            <div className="flex items-center gap-2">
               <button
                 onClick={() => setIsFullscreen(false)}
-                className="p-3 rounded-2xl bg-zinc-800 hover:bg-zinc-700 active:scale-95 text-white transition-all flex items-center gap-1.5 text-xs font-bold"
+                className="px-4 py-3 rounded-2xl bg-zinc-800/90 hover:bg-rose-950 border border-zinc-600 hover:border-rose-500 active:scale-95 text-white flex items-center gap-1.5 font-black text-xs md:text-sm shadow-xl transition-all"
               >
-                <Minimize2 className="w-5 h-5" /> Esci Schermo Intero
+                <X className="w-5 h-5 text-rose-400" />
+                <span>ESCI</span>
               </button>
             </div>
           </div>
 
-          {/* Sezione Centrale: Grafico Fullscreen */}
-          <div className="relative flex-1 w-full my-3 rounded-2xl overflow-hidden border border-zinc-800 bg-[#090a10]">
+          {/* Sezione Centrale: Grafico Fullscreen Fluido */}
+          <div className="relative flex-1 min-h-0 w-full my-2.5 rounded-2xl overflow-hidden border border-zinc-800 bg-[#090a10]">
             <canvas ref={fullscreenCanvasRef} className="w-full h-full block" />
           </div>
 
-          {/* Sezione Inferiore: Canzone Attuale, Tempo Target e Switch Rapido */}
-          <div className="flex items-center justify-between gap-3 p-3 rounded-2xl bg-zinc-900/90 border border-zinc-800">
+          {/* Sezione Inferiore: Canzone, Tempo Target e Cambio Brano Stage */}
+          <div className="flex items-center justify-between gap-2.5 p-2.5 md:p-3 rounded-2xl bg-zinc-900/95 border border-zinc-800">
             {onPrevSong && (
               <button
                 onClick={onPrevSong}
-                className="py-3 px-4 rounded-xl bg-zinc-800 hover:bg-zinc-700 active:scale-95 text-zinc-200 font-bold text-xs flex items-center gap-1.5"
+                className="min-h-[48px] px-3 md:px-5 rounded-xl bg-zinc-800 hover:bg-zinc-700 active:scale-95 text-zinc-200 font-black text-xs md:text-sm flex items-center gap-1.5 transition-all shrink-0"
               >
                 <SkipBack className="w-4 h-4" /> PREV
               </button>
             )}
 
-            <div className="flex-1 flex flex-col items-center justify-center text-center">
-              <span className="text-xl md:text-2xl font-black text-white truncate">
+            <div className="flex-1 flex flex-col items-center justify-center text-center px-1 overflow-hidden">
+              <span className="text-base md:text-xl font-black text-white truncate max-w-full">
                 {currentSong?.title || 'Metronomo Libero'}
               </span>
-              <div className="flex items-center gap-2 text-xs md:text-sm font-mono text-zinc-400 mt-0.5">
+              <div className="flex items-center gap-1.5 md:gap-2 text-[11px] md:text-xs font-mono text-zinc-400 mt-0.5">
                 <span className="text-cyan-400 font-bold">Target: {targetBpm} BPM</span>
                 <span>•</span>
                 <span>{currentSong?.timeSignature || '4/4'}</span>
                 {currentSong?.notes && (
                   <>
                     <span>•</span>
-                    <span className="italic text-zinc-400 truncate max-w-xs md:max-w-md">
+                    <span className="italic text-zinc-400 truncate max-w-[120px] md:max-w-xs">
                       {currentSong.notes}
                     </span>
                   </>
@@ -370,10 +400,23 @@ export const TempoTrackerGraph: React.FC<TempoTrackerGraphProps> = ({
               </div>
             </div>
 
+            {onTogglePlay && (
+              <button
+                onClick={onTogglePlay}
+                className={`min-h-[48px] px-3.5 md:px-5 rounded-xl font-black text-xs md:text-sm active:scale-95 transition-all shrink-0 ${
+                  isPlaying
+                    ? 'bg-rose-500 hover:bg-rose-600 text-white shadow-rose-950/40'
+                    : 'bg-emerald-500 hover:bg-emerald-600 text-black shadow-emerald-950/40'
+                }`}
+              >
+                {isPlaying ? 'STOP CLICK' : 'START CLICK'}
+              </button>
+            )}
+
             {onNextSong && (
               <button
                 onClick={onNextSong}
-                className="py-3 px-4 rounded-xl bg-cyan-600/40 hover:bg-cyan-600/60 border border-cyan-500/50 active:scale-95 text-cyan-200 font-bold text-xs flex items-center gap-1.5"
+                className="min-h-[48px] px-3 md:px-5 rounded-xl bg-cyan-600/40 hover:bg-cyan-600/60 border border-cyan-500/50 active:scale-95 text-cyan-200 font-black text-xs md:text-sm flex items-center gap-1.5 transition-all shrink-0"
               >
                 NEXT <SkipForward className="w-4 h-4" />
               </button>
@@ -408,14 +451,14 @@ export const TempoTrackerGraph: React.FC<TempoTrackerGraphProps> = ({
 
             <button
               onClick={() => setIsFullscreen(true)}
-              className="flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-cyan-300 text-xs font-semibold border border-cyan-500/30 transition-all active:scale-95"
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-cyan-300 text-xs font-bold border border-cyan-500/30 transition-all active:scale-95"
             >
-              <Maximize2 className="w-3.5 h-3.5" /> Schermo Intero
+              <Maximize2 className="w-4 h-4" /> Schermo Intero
             </button>
 
             <button
               onClick={onToggleListen}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl font-semibold text-xs transition-all shadow-md active:scale-95 ${
+              className={`flex items-center gap-1.5 px-3 py-2 rounded-xl font-bold text-xs transition-all shadow-md active:scale-95 ${
                 isListening
                   ? 'bg-rose-500 hover:bg-rose-600 text-white'
                   : 'bg-emerald-500 hover:bg-emerald-600 text-black'
@@ -520,7 +563,6 @@ export const TempoTrackerGraph: React.FC<TempoTrackerGraphProps> = ({
                     className="h-full bg-emerald-500 transition-all duration-75"
                     style={{ width: `${audioLevel}%` }}
                   />
-                  {/* Tacca visiva della soglia per vedere quando il colpo la supera */}
                   <div
                     className="absolute top-0 bottom-0 w-1 bg-amber-400"
                     style={{ left: `${thresholdLevel}%` }}

@@ -24,10 +24,10 @@ export const VisualFlasher: React.FC<VisualFlasherProps> = ({
       {/* Overlay flash a tutto schermo per il batterista */}
       {fullscreenFlash && isFlashing && (
         <div
-          className={`fixed inset-0 pointer-events-none z-50 transition-opacity duration-75 ${
+          className={`fixed inset-0 pointer-events-none z-[200] transition-opacity duration-75 ${
             isAccent
-              ? 'bg-emerald-400/35 opacity-100'
-              : 'bg-cyan-400/20 opacity-100'
+              ? 'bg-emerald-400/40 opacity-100'
+              : 'bg-cyan-400/25 opacity-100'
           }`}
         />
       )}

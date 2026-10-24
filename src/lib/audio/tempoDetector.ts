@@ -79,25 +79,43 @@ export class TempoDetector {
     if (this.isListening) return true;
 
     try {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        throw new Error('Microfono non supportato su questo browser.');
+      if (!this.mediaStream || !this.mediaStream.getTracks().some((t) => t.readyState === 'live')) {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          throw new Error('Microfono non supportato su questo browser.');
+        }
+
+        this.mediaStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+          },
+        });
       }
 
-      this.mediaStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false,
-        },
+      const activeStream = this.mediaStream;
+      if (!activeStream) {
+        throw new Error('Impossibile inizializzare lo stream microfonico.');
+      }
+
+      // Riabilita le tracce audio
+      activeStream.getTracks().forEach((t) => {
+        t.enabled = true;
       });
 
       const AudioCtxClass = window.AudioContext || (window as any).webkitAudioContext;
-      this.audioCtx = new AudioCtxClass();
+      if (!this.audioCtx || this.audioCtx.state === 'closed') {
+        this.audioCtx = new AudioCtxClass();
+      }
       if (this.audioCtx.state === 'suspended') {
         await this.audioCtx.resume();
       }
 
-      this.sourceNode = this.audioCtx.createMediaStreamSource(this.mediaStream);
+      // Ricrea o riconnetti la sorgente
+      if (this.sourceNode) {
+        try { this.sourceNode.disconnect(); } catch {}
+      }
+      this.sourceNode = this.audioCtx.createMediaStreamSource(activeStream);
 
       // Preamplificatore digitale regolabile
       this.preGainNode = this.audioCtx.createGain();
@@ -153,17 +171,15 @@ export class TempoDetector {
       cancelAnimationFrame(this.animationFrameId);
       this.animationFrameId = null;
     }
+    // Disabilita l'acquisizione senza distruggere lo stream: in questo modo Safari NON richiederà l'autorizzazione di nuovo!
     if (this.mediaStream) {
-      this.mediaStream.getTracks().forEach((track) => track.stop());
-      this.mediaStream = null;
+      this.mediaStream.getTracks().forEach((track) => {
+        track.enabled = false;
+      });
     }
     if (this.sourceNode) {
       try { this.sourceNode.disconnect(); } catch {}
       this.sourceNode = null;
-    }
-    if (this.audioCtx && this.audioCtx.state !== 'closed') {
-      try { this.audioCtx.close(); } catch {}
-      this.audioCtx = null;
     }
     this.recentHitTimes = [];
     this.currentSmoothedBpm = null;

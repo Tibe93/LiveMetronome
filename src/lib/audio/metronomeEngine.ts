@@ -7,7 +7,15 @@ class MetronomeEngine {
   private timeSignature: TimeSignature = '4/4';
   private subdivision: Subdivision = 'quarter';
   private soundPreset: SoundPreset = 'woodblock';
-  private volume: number = 0.9;
+  private volume: number = 0.95;
+
+  // Catena Audio di Uscita ad Alto Volume & Anti-Ducking
+  private masterBus: GainNode | null = null;
+  private compressorNode: DynamicsCompressorNode | null = null;
+  private boostNode: GainNode | null = null;
+
+  // Elemento Audio HTML5 per bypassare l'interruttore silenzioso su iOS (Session Category: Playback)
+  private silentAudioElement: HTMLAudioElement | null = null;
 
   // Lookahead scheduler
   private lookaheadMs: number = 25;
@@ -20,14 +28,13 @@ class MetronomeEngine {
   // Callbacks
   private onBeatCallback: ((event: BeatEvent) => void) | null = null;
 
-  constructor() {
-    // Lazy initialize AudioContext on user action (vital for iOS)
-  }
+  constructor() {}
 
   public getAudioContext(): AudioContext {
     if (!this.audioCtx) {
       const AudioCtxClass = window.AudioContext || (window as any).webkitAudioContext;
       this.audioCtx = new AudioCtxClass();
+      this.setupMasterBus();
     }
     if (this.audioCtx.state === 'suspended') {
       this.audioCtx.resume();
@@ -35,18 +42,70 @@ class MetronomeEngine {
     return this.audioCtx;
   }
 
+  private setupMasterBus() {
+    if (!this.audioCtx) return;
+
+    // Master Gain iniziale
+    this.masterBus = this.audioCtx.createGain();
+    this.masterBus.gain.setValueAtTime(this.volume, this.audioCtx.currentTime);
+
+    // Dynamics Compressor per rendere il click percussivo, denso e punchy
+    this.compressorNode = this.audioCtx.createDynamicsCompressor();
+    this.compressorNode.threshold.setValueAtTime(-14, this.audioCtx.currentTime);
+    this.compressorNode.knee.setValueAtTime(4, this.audioCtx.currentTime);
+    this.compressorNode.ratio.setValueAtTime(12, this.audioCtx.currentTime);
+    this.compressorNode.attack.setValueAtTime(0.001, this.audioCtx.currentTime);
+    this.compressorNode.release.setValueAtTime(0.035, this.audioCtx.currentTime);
+
+    // Boost Gain Node per contrastare l'attenuazione di iOS quando il microfono è attivo
+    this.boostNode = this.audioCtx.createGain();
+    // 2.6x di boost del volume
+    this.boostNode.gain.setValueAtTime(2.6, this.audioCtx.currentTime);
+
+    // Connessione: masterBus -> compressor -> boost -> destination
+    this.masterBus.connect(this.compressorNode);
+    this.compressorNode.connect(this.boostNode);
+    this.boostNode.connect(this.audioCtx.destination);
+  }
+
+  /**
+   * Bypass interruttore Silenzioso iOS:
+   * Avvia una traccia inaudibile HTML5 che forza Safari a trattare la pagina
+   * in modalità 'Playback', ignorando il tasto silenzioso hardware di iPhone.
+   */
   public async unlockAudio(): Promise<boolean> {
     try {
       const ctx = this.getAudioContext();
       if (ctx.state === 'suspended') {
         await ctx.resume();
       }
-      // Piccolo buffer silenzioso per garantire l'attivazione della catena audio iOS
+
+      if (typeof window !== 'undefined' && !this.silentAudioElement) {
+        // Breve file WAV silenzioso in base64
+        const silenceDataUri =
+          'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
+        this.silentAudioElement = new Audio(silenceDataUri);
+        this.silentAudioElement.loop = true;
+        (this.silentAudioElement as any).playsInline = true;
+        this.silentAudioElement.setAttribute('playsinline', '');
+        this.silentAudioElement.setAttribute('webkit-playsinline', '');
+      }
+
+      if (this.silentAudioElement) {
+        try {
+          await this.silentAudioElement.play();
+        } catch {
+          // Ignora se non necessario
+        }
+      }
+
+      // Piccolo buffer di sblocco Web Audio
       const buffer = ctx.createBuffer(1, 1, 22050);
       const source = ctx.createBufferSource();
       source.buffer = buffer;
       source.connect(ctx.destination);
       source.start(0);
+
       return true;
     } catch (err) {
       console.warn('Audio unlock error:', err);
@@ -83,6 +142,9 @@ class MetronomeEngine {
 
   public setVolume(vol: number) {
     this.volume = Math.max(0, Math.min(1, vol));
+    if (this.masterBus && this.audioCtx) {
+      this.masterBus.gain.setValueAtTime(this.volume, this.audioCtx.currentTime);
+    }
   }
 
   public getIsRunning(): boolean {
@@ -142,6 +204,11 @@ class MetronomeEngine {
       clearInterval(this.timerId);
       this.timerId = null;
     }
+    if (this.silentAudioElement) {
+      try {
+        this.silentAudioElement.pause();
+      } catch {}
+    }
     this.currentBeatInMeasure = 0;
     this.currentSubdivisionInBeat = 0;
   }
@@ -151,7 +218,6 @@ class MetronomeEngine {
     const beatsPerMeasure = this.getBeatsPerMeasure();
     const subFactor = this.getSubdivisionFactor();
 
-    // Schedula tutti i beat e suddivisioni compresi nella finestra di lookahead
     while (this.nextNoteTime < ctx.currentTime + this.scheduleAheadSec) {
       const isSub = this.currentSubdivisionInBeat > 0;
       const isAccent = !isSub && this.isBeatAccent(this.currentBeatInMeasure);
@@ -165,14 +231,10 @@ class MetronomeEngine {
         this.currentSubdivisionInBeat
       );
 
-      // Avanzamento temporale della suddivisione
-      // Durata di 1 quarto = 60 / bpm
-      // Durata di ogni tick = (60 / bpm) / subFactor
       const secondsPerBeat = 60.0 / this.bpm;
       const secondsPerSub = secondsPerBeat / subFactor;
       this.nextNoteTime += secondsPerSub;
 
-      // Avanza indici
       this.currentSubdivisionInBeat++;
       if (this.currentSubdivisionInBeat >= subFactor) {
         this.currentSubdivisionInBeat = 0;
@@ -191,10 +253,8 @@ class MetronomeEngine {
   ) {
     const ctx = this.getAudioContext();
 
-    // Riproduci suono sintetico a bassissima latenza
     this.playSynthesizedSound(ctx, time, isAccent, isSubdivision);
 
-    // Emetti evento per sincronizzazione visiva (usando requestAnimationFrame e timestamp)
     if (this.onBeatCallback) {
       const delayMs = Math.max(0, (time - ctx.currentTime) * 1000);
       window.setTimeout(() => {
@@ -213,68 +273,70 @@ class MetronomeEngine {
   }
 
   private playSynthesizedSound(ctx: AudioContext, time: number, isAccent: boolean, isSub: boolean) {
-    const masterGain = ctx.createGain();
-    masterGain.connect(ctx.destination);
+    if (!this.masterBus) this.setupMasterBus();
+    const destinationBus = this.masterBus || ctx.destination;
 
-    // Livello volume
-    const baseGain = this.volume * (isSub ? 0.35 : isAccent ? 1.0 : 0.7);
-    masterGain.gain.setValueAtTime(0.001, time);
-    masterGain.gain.exponentialRampToValueAtTime(baseGain, time + 0.002);
+    const noteGain = ctx.createGain();
+    noteGain.connect(destinationBus);
+
+    // Dinamica ad alta energia
+    const baseGain = isSub ? 0.45 : isAccent ? 1.4 : 1.0;
+    noteGain.gain.setValueAtTime(0.001, time);
+    noteGain.gain.exponentialRampToValueAtTime(baseGain, time + 0.001);
 
     switch (this.soundPreset) {
       case 'woodblock': {
         const osc = ctx.createOscillator();
         const filter = ctx.createBiquadFilter();
-        
+
         filter.type = 'bandpass';
-        filter.frequency.setValueAtTime(isAccent ? 1300 : isSub ? 800 : 1000, time);
-        filter.Q.setValueAtTime(10, time);
+        filter.frequency.setValueAtTime(isAccent ? 1400 : isSub ? 850 : 1100, time);
+        filter.Q.setValueAtTime(12, time);
 
         osc.type = 'sine';
-        osc.frequency.setValueAtTime(isAccent ? 1200 : isSub ? 750 : 950, time);
-        osc.frequency.exponentialRampToValueAtTime(300, time + 0.04);
+        osc.frequency.setValueAtTime(isAccent ? 1350 : isSub ? 800 : 1050, time);
+        osc.frequency.exponentialRampToValueAtTime(320, time + 0.04);
 
         osc.connect(filter);
-        filter.connect(masterGain);
+        filter.connect(noteGain);
 
-        masterGain.gain.exponentialRampToValueAtTime(0.0001, time + 0.045);
+        noteGain.gain.exponentialRampToValueAtTime(0.0001, time + 0.05);
         osc.start(time);
-        osc.stop(time + 0.05);
+        osc.stop(time + 0.055);
         break;
       }
 
       case 'digital': {
         const osc = ctx.createOscillator();
         osc.type = 'sine';
-        osc.frequency.setValueAtTime(isAccent ? 1200 : isSub ? 600 : 880, time);
-        osc.connect(masterGain);
+        osc.frequency.setValueAtTime(isAccent ? 1400 : isSub ? 700 : 950, time);
+        osc.connect(noteGain);
 
-        masterGain.gain.exponentialRampToValueAtTime(0.0001, time + 0.035);
+        noteGain.gain.exponentialRampToValueAtTime(0.0001, time + 0.04);
         osc.start(time);
-        osc.stop(time + 0.04);
+        osc.stop(time + 0.045);
         break;
       }
 
       case 'cowbell': {
-        // Doppio oscillatore disarmonico
         const osc1 = ctx.createOscillator();
         const osc2 = ctx.createOscillator();
         const filter = ctx.createBiquadFilter();
 
         osc1.type = 'square';
         osc2.type = 'square';
-        osc1.frequency.setValueAtTime(isAccent ? 800 : 587, time);
-        osc2.frequency.setValueAtTime(isAccent ? 1100 : 845, time);
+        osc1.frequency.setValueAtTime(isAccent ? 850 : 620, time);
+        osc2.frequency.setValueAtTime(isAccent ? 1150 : 890, time);
 
         filter.type = 'bandpass';
-        filter.frequency.setValueAtTime(900, time);
-        filter.Q.setValueAtTime(3, time);
+        filter.frequency.setValueAtTime(950, time);
+        filter.Q.setValueAtTime(3.5, time);
 
         osc1.connect(filter);
         osc2.connect(filter);
-        filter.connect(masterGain);
+        filter.connect(noteGain);
 
-        masterGain.gain.exponentialRampToValueAtTime(0.0001, time + 0.09);
+        noteGain.gain.exponentialRampToValueAtTime(0.0001, time + 0.09);
         osc1.start(time);
         osc2.start(time);
         osc1.stop(time + 0.1);
@@ -284,17 +346,15 @@ class MetronomeEngine {
 
       case 'drumkit': {
         if (isAccent) {
-          // Cassa sintetica (Kick)
           const osc = ctx.createOscillator();
           osc.type = 'sine';
-          osc.frequency.setValueAtTime(150, time);
+          osc.frequency.setValueAtTime(170, time);
           osc.frequency.exponentialRampToValueAtTime(45, time + 0.08);
-          osc.connect(masterGain);
-          masterGain.gain.exponentialRampToValueAtTime(0.0001, time + 0.12);
+          osc.connect(noteGain);
+          noteGain.gain.exponentialRampToValueAtTime(0.0001, time + 0.12);
           osc.start(time);
           osc.stop(time + 0.13);
         } else {
-          // Hi-Hat / Rullante sintetico (White noise)
           const bufferSize = ctx.sampleRate * 0.05;
           const noiseBuffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
           const output = noiseBuffer.getChannelData(0);
@@ -306,12 +366,12 @@ class MetronomeEngine {
 
           const filter = ctx.createBiquadFilter();
           filter.type = 'highpass';
-          filter.frequency.setValueAtTime(isSub ? 5000 : 3000, time);
+          filter.frequency.setValueAtTime(isSub ? 5000 : 3200, time);
 
           whiteNoise.connect(filter);
-          filter.connect(masterGain);
+          filter.connect(noteGain);
 
-          masterGain.gain.exponentialRampToValueAtTime(0.0001, time + 0.05);
+          noteGain.gain.exponentialRampToValueAtTime(0.0001, time + 0.05);
           whiteNoise.start(time);
           whiteNoise.stop(time + 0.06);
         }
@@ -320,15 +380,14 @@ class MetronomeEngine {
 
       case 'click':
       default: {
-        // Click analogico breve
         const osc = ctx.createOscillator();
         osc.type = 'triangle';
-        osc.frequency.setValueAtTime(isAccent ? 2400 : isSub ? 1200 : 1800, time);
-        osc.connect(masterGain);
+        osc.frequency.setValueAtTime(isAccent ? 2600 : isSub ? 1300 : 2000, time);
+        osc.connect(noteGain);
 
-        masterGain.gain.exponentialRampToValueAtTime(0.0001, time + 0.015);
+        noteGain.gain.exponentialRampToValueAtTime(0.0001, time + 0.018);
         osc.start(time);
-        osc.stop(time + 0.02);
+        osc.stop(time + 0.022);
         break;
       }
     }

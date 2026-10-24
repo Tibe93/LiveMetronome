@@ -541,6 +541,8 @@ export default function Home() {
         currentSong={currentSong}
         onNextSong={handleNextSong}
         onPrevSong={handlePrevSong}
+        isPlaying={isPlaying}
+        onTogglePlay={handleTogglePlay}
         error={micError}
       />
 

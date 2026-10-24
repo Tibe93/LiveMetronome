@@ -4,14 +4,29 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { metronomeEngine } from '@/lib/audio/metronomeEngine';
 import { tempoDetector, TempoDetectionResult } from '@/lib/audio/tempoDetector';
 import { requestWakeLock, releaseWakeLock, setupWakeLockAutoRenew } from '@/lib/audio/wakeLock';
-import { loadSetlist, saveSetlist, exportSetlistAsJson, importSetlistFromJson } from '@/lib/storage/setlistStorage';
-import { BeatEvent, Song, SoundPreset, Subdivision, TimeSignature, TrackerPoint } from '@/types';
+import {
+  loadSetlistsData,
+  saveSetlistsData,
+  exportSingleSetlistAsJson,
+  exportAllSetlistsAsJson,
+  importSetlistJson,
+} from '@/lib/storage/setlistStorage';
+import {
+  BeatEvent,
+  Setlist,
+  Song,
+  SoundPreset,
+  Subdivision,
+  TimeSignature,
+  TrackerMode,
+  TrackerPoint,
+} from '@/types';
 import { MetronomeDisplay } from '@/components/MetronomeDisplay';
 import { VisualFlasher } from '@/components/VisualFlasher';
 import { TempoTrackerGraph } from '@/components/TempoTrackerGraph';
 import { SetlistDrawer } from '@/components/SetlistDrawer';
 import { InstallPwaBanner } from '@/components/InstallPwaBanner';
-import { Volume2, Radio, Music2, Info } from 'lucide-react';
+import { Radio, Music2 } from 'lucide-react';
 
 export default function Home() {
   // Metronomo State
@@ -25,40 +40,52 @@ export default function Home() {
   const [fullscreenFlash, setFullscreenFlash] = useState<boolean>(false);
   const [isWakeLocked, setIsWakeLocked] = useState<boolean>(false);
 
-  // Scaletta / Setlist State
-  const [songs, setSongs] = useState<Song[]>([]);
+  // Scalette Multiple State
+  const [setlists, setSetlists] = useState<Setlist[]>([]);
+  const [activeSetlistId, setActiveSetlistId] = useState<string>('');
   const [currentSongIndex, setCurrentSongIndex] = useState<number>(0);
 
   // Tempo Tracker State
   const [isListening, setIsListening] = useState<boolean>(false);
+  const [trackerMode, setTrackerMode] = useState<TrackerMode>('acoustic');
   const [detectedBpm, setDetectedBpm] = useState<number | null>(null);
   const [confidence, setConfidence] = useState<number>(0);
   const [audioLevel, setAudioLevel] = useState<number>(0);
+  const [thresholdLevel, setThresholdLevel] = useState<number>(20);
   const [isHit, setIsHit] = useState<boolean>(false);
   const [micError, setMicError] = useState<string | null>(null);
-  const [sensitivity, setSensitivity] = useState<number>(0.6);
+  const [sensitivity, setSensitivity] = useState<number>(0.65);
   const [trackerHistory, setTrackerHistory] = useState<TrackerPoint[]>([]);
 
   const sessionStartTimeRef = useRef<number>(0);
   const lastHistoryPointTimeRef = useRef<number>(0);
 
-  // Carica scaletta salvata all'avvio
+  // Scaletta e Brano attivi
+  const activeSetlist = setlists.find((s) => s.id === activeSetlistId) || setlists[0];
+  const activeSongs = activeSetlist ? activeSetlist.songs : [];
+  const currentSong = activeSongs[currentSongIndex] || null;
+
+  // Caricamento iniziale scalette
   useEffect(() => {
-    const loaded = loadSetlist();
-    setSongs(loaded);
-    if (loaded.length > 0) {
-      const first = loaded[0];
+    const { setlists: loadedSetlists, activeId } = loadSetlistsData();
+    setSetlists(loadedSetlists);
+    setActiveSetlistId(activeId);
+
+    const active = loadedSetlists.find((s) => s.id === activeId) || loadedSetlists[0];
+    if (active && active.songs.length > 0) {
+      const first = active.songs[0];
       setBpm(first.bpm);
       setTimeSignature(first.timeSignature);
       setSubdivision(first.subdivision);
       setSoundPreset(first.soundPreset);
+
       metronomeEngine.setBpm(first.bpm);
       metronomeEngine.setTimeSignature(first.timeSignature);
       metronomeEngine.setSubdivision(first.subdivision);
       metronomeEngine.setSoundPreset(first.soundPreset);
+      tempoDetector.setTargetBpm(first.bpm);
     }
 
-    // Configura Wake Lock auto-rinnovo quando lo schermo torna visibile
     const cleanupWakeLock = setupWakeLockAutoRenew();
 
     return () => {
@@ -69,33 +96,42 @@ export default function Home() {
     };
   }, []);
 
+  // Aggiornamento impostazioni tempoDetector
+  useEffect(() => {
+    tempoDetector.setSensitivity(sensitivity);
+  }, [sensitivity]);
+
+  useEffect(() => {
+    tempoDetector.setMode(trackerMode);
+  }, [trackerMode]);
+
+  useEffect(() => {
+    tempoDetector.setTargetBpm(bpm);
+  }, [bpm]);
+
   // Callback battuta emessa dal motore metronomo
   useEffect(() => {
     metronomeEngine.setOnBeatCallback((event: BeatEvent) => {
       setCurrentBeat(event);
-      // Breve reset dello stato beat visivo dopo 80ms per consentire l'animazione pulsante
       window.setTimeout(() => {
         setCurrentBeat((prev) => (prev?.time === event.time ? null : prev));
       }, 90);
     });
   }, []);
 
-  // Configurazione callback Tempo Detector dal microfono
-  useEffect(() => {
-    tempoDetector.setSensitivity(sensitivity);
-  }, [sensitivity]);
-
+  // Callback dal tempo detector
   useEffect(() => {
     tempoDetector.setOnResult((res: TempoDetectionResult) => {
       setDetectedBpm(res.detectedBpm);
       setConfidence(res.confidence);
       setAudioLevel(res.audioLevel);
+      setThresholdLevel(res.thresholdLevel);
       setIsHit(res.isHit);
 
       if (res.detectedBpm !== null) {
         const now = Date.now();
-        // Aggiungi un punto alla cronologia ogni 250ms per mantenere il grafico pulito e fluido
-        if (now - lastHistoryPointTimeRef.current >= 250) {
+        // Aggiungi un punto ogni 300ms per mantenere la timeline pulita
+        if (now - lastHistoryPointTimeRef.current >= 300) {
           lastHistoryPointTimeRef.current = now;
           const timeOffset = now - sessionStartTimeRef.current;
           const drift = res.detectedBpm - bpm;
@@ -111,15 +147,14 @@ export default function Home() {
                 confidence: res.confidence,
               },
             ];
-            // Mantieni al massimo 120 punti (circa 30 secondi di sessione attiva)
-            return next.length > 120 ? next.slice(-120) : next;
+            return next.length > 150 ? next.slice(-150) : next;
           });
         }
       }
     });
   }, [bpm]);
 
-  // Gestione Wake Lock attiva/disattiva
+  // Gestione Wake Lock
   const updateWakeLockState = useCallback(async (shouldLock: boolean) => {
     if (shouldLock) {
       const success = await requestWakeLock();
@@ -180,40 +215,17 @@ export default function Home() {
     }
   };
 
-  // Cambio BPM
+  // Cambio BPM manuale
   const handleBpmChange = (newBpm: number) => {
     setBpm(newBpm);
     metronomeEngine.setBpm(newBpm);
+    tempoDetector.setTargetBpm(newBpm);
   };
 
-  // Cambio Metrica
-  const handleTimeSignatureChange = (ts: TimeSignature) => {
-    setTimeSignature(ts);
-    metronomeEngine.setTimeSignature(ts);
-  };
-
-  // Cambio Suddivisione
-  const handleSubdivisionChange = (sub: Subdivision) => {
-    setSubdivision(sub);
-    metronomeEngine.setSubdivision(sub);
-  };
-
-  // Cambio Suono
-  const handleSoundPresetChange = (preset: SoundPreset) => {
-    setSoundPreset(preset);
-    metronomeEngine.setSoundPreset(preset);
-  };
-
-  // Cambio Volume
-  const handleVolumeChange = (vol: number) => {
-    setVolume(vol);
-    metronomeEngine.setVolume(vol);
-  };
-
-  // Selezione brano da scaletta
+  // Selezione brano
   const handleSelectSong = (index: number) => {
-    if (index < 0 || index >= songs.length) return;
-    const song = songs[index];
+    if (index < 0 || index >= activeSongs.length) return;
+    const song = activeSongs[index];
     setCurrentSongIndex(index);
     setBpm(song.bpm);
     setTimeSignature(song.timeSignature);
@@ -224,42 +236,103 @@ export default function Home() {
     metronomeEngine.setTimeSignature(song.timeSignature);
     metronomeEngine.setSubdivision(song.subdivision);
     metronomeEngine.setSoundPreset(song.soundPreset);
+    tempoDetector.setTargetBpm(song.bpm);
   };
 
-  // Cambio rapido brano Next / Prev
   const handleNextSong = () => {
-    if (songs.length === 0) return;
-    const nextIndex = (currentSongIndex + 1) % songs.length;
+    if (activeSongs.length === 0) return;
+    const nextIndex = (currentSongIndex + 1) % activeSongs.length;
     handleSelectSong(nextIndex);
   };
 
   const handlePrevSong = () => {
-    if (songs.length === 0) return;
-    const prevIndex = (currentSongIndex - 1 + songs.length) % songs.length;
+    if (activeSongs.length === 0) return;
+    const prevIndex = (currentSongIndex - 1 + activeSongs.length) % activeSongs.length;
     handleSelectSong(prevIndex);
   };
 
-  // Modifiche Scaletta
+  // Gestione Scaletta Attiva & Operazioni
+  const handleSelectSetlist = (id: string) => {
+    setActiveSetlistId(id);
+    saveSetlistsData(setlists, id);
+    const setlist = setlists.find((s) => s.id === id);
+    if (setlist && setlist.songs.length > 0) {
+      setCurrentSongIndex(0);
+      const first = setlist.songs[0];
+      handleBpmChange(first.bpm);
+      setTimeSignature(first.timeSignature);
+      setSubdivision(first.subdivision);
+      setSoundPreset(first.soundPreset);
+      metronomeEngine.setTimeSignature(first.timeSignature);
+      metronomeEngine.setSubdivision(first.subdivision);
+      metronomeEngine.setSoundPreset(first.soundPreset);
+    }
+  };
+
+  const handleCreateSetlist = (name: string) => {
+    const newSetlist: Setlist = {
+      id: `setlist-${Date.now()}`,
+      name,
+      songs: [],
+    };
+    const updated = [...setlists, newSetlist];
+    setSetlists(updated);
+    handleSelectSetlist(newSetlist.id);
+  };
+
+  const handleRenameSetlist = (id: string, newName: string) => {
+    const updated = setlists.map((s) => (s.id === id ? { ...s, name: newName } : s));
+    setSetlists(updated);
+    saveSetlistsData(updated, activeSetlistId);
+  };
+
+  const handleDeleteSetlist = (id: string) => {
+    const updated = setlists.filter((s) => s.id !== id);
+    if (updated.length === 0) return;
+    setSetlists(updated);
+    const newActiveId = id === activeSetlistId ? updated[0].id : activeSetlistId;
+    handleSelectSetlist(newActiveId);
+  };
+
+  const handleDuplicateSetlist = (id: string) => {
+    const target = setlists.find((s) => s.id === id);
+    if (!target) return;
+    const duplicated: Setlist = {
+      id: `setlist-${Date.now()}`,
+      name: `${target.name} (Copia)`,
+      songs: target.songs.map((s) => ({ ...s, id: `song-${Date.now()}-${Math.random()}` })),
+    };
+    const updated = [...setlists, duplicated];
+    setSetlists(updated);
+    handleSelectSetlist(duplicated.id);
+  };
+
+  // Modifica canzoni nella scaletta corrente
+  const updateCurrentSetlistSongs = (newSongs: Song[]) => {
+    const updated = setlists.map((s) =>
+      s.id === activeSetlistId ? { ...s, songs: newSongs } : s
+    );
+    setSetlists(updated);
+    saveSetlistsData(updated, activeSetlistId);
+  };
+
   const handleAddSong = (newSongData: Omit<Song, 'id'>) => {
     const newSong: Song = {
       ...newSongData,
       id: `song-${Date.now()}`,
     };
-    const updated = [...songs, newSong];
-    setSongs(updated);
-    saveSetlist(updated);
+    const updated = [...activeSongs, newSong];
+    updateCurrentSetlistSongs(updated);
   };
 
   const handleUpdateSong = (updatedSong: Song) => {
-    const updated = songs.map((s) => (s.id === updatedSong.id ? updatedSong : s));
-    setSongs(updated);
-    saveSetlist(updated);
-    if (songs[currentSongIndex]?.id === updatedSong.id) {
-      setBpm(updatedSong.bpm);
+    const updated = activeSongs.map((s) => (s.id === updatedSong.id ? updatedSong : s));
+    updateCurrentSetlistSongs(updated);
+    if (activeSongs[currentSongIndex]?.id === updatedSong.id) {
+      handleBpmChange(updatedSong.bpm);
       setTimeSignature(updatedSong.timeSignature);
       setSubdivision(updatedSong.subdivision);
       setSoundPreset(updatedSong.soundPreset);
-      metronomeEngine.setBpm(updatedSong.bpm);
       metronomeEngine.setTimeSignature(updatedSong.timeSignature);
       metronomeEngine.setSubdivision(updatedSong.subdivision);
       metronomeEngine.setSoundPreset(updatedSong.soundPreset);
@@ -267,9 +340,8 @@ export default function Home() {
   };
 
   const handleDeleteSong = (id: string) => {
-    const updated = songs.filter((s) => s.id !== id);
-    setSongs(updated);
-    saveSetlist(updated);
+    const updated = activeSongs.filter((s) => s.id !== id);
+    updateCurrentSetlistSongs(updated);
     if (currentSongIndex >= updated.length) {
       setCurrentSongIndex(Math.max(0, updated.length - 1));
     }
@@ -277,12 +349,11 @@ export default function Home() {
 
   const handleMoveSong = (index: number, direction: 'up' | 'down') => {
     const targetIndex = direction === 'up' ? index - 1 : index + 1;
-    if (targetIndex < 0 || targetIndex >= songs.length) return;
-    const updated = [...songs];
+    if (targetIndex < 0 || targetIndex >= activeSongs.length) return;
+    const updated = [...activeSongs];
     const [moved] = updated.splice(index, 1);
     updated.splice(targetIndex, 0, moved);
-    setSongs(updated);
-    saveSetlist(updated);
+    updateCurrentSetlistSongs(updated);
     if (currentSongIndex === index) {
       setCurrentSongIndex(targetIndex);
     } else if (currentSongIndex === targetIndex) {
@@ -290,30 +361,52 @@ export default function Home() {
     }
   };
 
-  // Esporta / Importa JSON Scaletta
-  const handleExportSongs = () => {
-    const jsonStr = exportSetlistAsJson(songs);
-    const blob = new Blob([jsonStr], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `scaletta-live-${new Date().toISOString().slice(0, 10)}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
+  // Export & Import
+  const handleExportActive = () => {
+    if (!activeSetlist) return;
+    const json = exportSingleSetlistAsJson(activeSetlist);
+    downloadJsonFile(json, `${activeSetlist.name.toLowerCase().replace(/\s+/g, '_')}.json`);
   };
 
-  const handleImportSongs = (jsonStr: string): boolean => {
-    const imported = importSetlistFromJson(jsonStr);
-    if (imported) {
-      setSongs(imported);
-      setCurrentSongIndex(0);
-      handleSelectSong(0);
+  const handleExportAll = () => {
+    const json = exportAllSetlistsAsJson(setlists);
+    downloadJsonFile(json, `backup_scalette_${new Date().toISOString().slice(0, 10)}.json`);
+  };
+
+  const handleImportFile = (content: string): boolean => {
+    const parsed = importSetlistJson(content);
+    if (!parsed) return false;
+
+    if (parsed.type === 'single') {
+      const importedSetlist: Setlist = {
+        ...parsed.data,
+        id: `setlist-${Date.now()}`,
+      };
+      const updated = [...setlists, importedSetlist];
+      setSetlists(updated);
+      handleSelectSetlist(importedSetlist.id);
+      return true;
+    } else if (parsed.type === 'all' && Array.isArray(parsed.data)) {
+      const updated = [...parsed.data];
+      setSetlists(updated);
+      if (updated.length > 0) {
+        handleSelectSetlist(updated[0].id);
+      }
       return true;
     }
     return false;
   };
 
-  // Calcola numero battiti per misura per il flasher visivo
+  const downloadJsonFile = (content: string, filename: string) => {
+    const blob = new Blob([content], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const getMeasureBeats = (): number => {
     switch (timeSignature) {
       case '2/4': return 2;
@@ -327,10 +420,9 @@ export default function Home() {
     }
   };
 
-  // Gestione tasti di scelta rapida (Spazio = Play/Stop, Frecce = Cambio brano)
+  // Gestione tasti di scelta rapida
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Ignora se l'utente sta digitando in un input o select
       if (['INPUT', 'SELECT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName)) {
         return;
       }
@@ -345,7 +437,6 @@ export default function Home() {
         e.preventDefault();
         handlePrevSong();
       } else if (e.key === 't' || e.key === 'T') {
-        // Tap tempo rapido da tastiera
         metronomeEngine.unlockAudio();
       } else if (e.key === 'm' || e.key === 'M') {
         handleToggleListen();
@@ -354,11 +445,11 @@ export default function Home() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isPlaying, isListening, songs, currentSongIndex, bpm, timeSignature, subdivision, soundPreset, volume]);
+  }, [isPlaying, isListening, activeSongs, currentSongIndex, bpm, timeSignature, subdivision, soundPreset, volume]);
 
   return (
     <main className="min-h-screen bg-[#08090d] text-zinc-100 flex flex-col items-center justify-start p-3 md:p-6 pb-20 max-w-2xl mx-auto gap-4">
-      {/* Banner Notifica Installazione iPhone PWA */}
+      {/* Banner Installazione iPhone PWA */}
       <InstallPwaBanner />
 
       {/* Header Band Live */}
@@ -371,7 +462,7 @@ export default function Home() {
             <h1 className="text-base md:text-lg font-black tracking-tight text-white flex items-center gap-2">
               LIVE METRONOME
               <span className="text-[10px] font-mono px-2 py-0.5 rounded-md bg-cyan-950/80 text-cyan-300 border border-cyan-800/60 uppercase">
-                Stage Edition
+                Stage Pro
               </span>
             </h1>
             <p className="text-[11px] text-zinc-400">
@@ -408,36 +499,61 @@ export default function Home() {
         isPlaying={isPlaying}
         onTogglePlay={handleTogglePlay}
         timeSignature={timeSignature}
-        onTimeSignatureChange={handleTimeSignatureChange}
+        onTimeSignatureChange={(ts) => {
+          setTimeSignature(ts);
+          metronomeEngine.setTimeSignature(ts);
+        }}
         subdivision={subdivision}
-        onSubdivisionChange={handleSubdivisionChange}
+        onSubdivisionChange={(sub) => {
+          setSubdivision(sub);
+          metronomeEngine.setSubdivision(sub);
+        }}
         soundPreset={soundPreset}
-        onSoundPresetChange={handleSoundPresetChange}
+        onSoundPresetChange={(preset) => {
+          setSoundPreset(preset);
+          metronomeEngine.setSoundPreset(preset);
+        }}
         volume={volume}
-        onVolumeChange={handleVolumeChange}
+        onVolumeChange={(vol) => {
+          setVolume(vol);
+          metronomeEngine.setVolume(vol);
+        }}
         onTapTempo={() => {}}
         isWakeLocked={isWakeLocked}
       />
 
-      {/* Modulo 2: Tempo Tracker Microfono in Tempo Reale */}
+      {/* Modulo 2: Tempo Tracker Microfono con Modalità Fullscreen & Batteria Elettronica */}
       <TempoTrackerGraph
         isListening={isListening}
         detectedBpm={detectedBpm}
         targetBpm={bpm}
         confidence={confidence}
         audioLevel={audioLevel}
+        thresholdLevel={thresholdLevel}
         isHit={isHit}
         sensitivity={sensitivity}
         onSensitivityChange={setSensitivity}
+        trackerMode={trackerMode}
+        onTrackerModeChange={setTrackerMode}
         onToggleListen={handleToggleListen}
         history={trackerHistory}
         onClearHistory={() => setTrackerHistory([])}
+        currentSong={currentSong}
+        onNextSong={handleNextSong}
+        onPrevSong={handlePrevSong}
         error={micError}
       />
 
-      {/* Modulo 3: Scaletta Brani Live (Setlist) */}
+      {/* Modulo 3: Gestione Scalette Multiple (Setlists) & Brani Live */}
       <SetlistDrawer
-        songs={songs}
+        setlists={setlists}
+        activeSetlistId={activeSetlistId}
+        onSelectSetlist={handleSelectSetlist}
+        onCreateSetlist={handleCreateSetlist}
+        onRenameSetlist={handleRenameSetlist}
+        onDeleteSetlist={handleDeleteSetlist}
+        onDuplicateSetlist={handleDuplicateSetlist}
+        songs={activeSongs}
         currentSongIndex={currentSongIndex}
         onSelectSong={handleSelectSong}
         onAddSong={handleAddSong}
@@ -446,14 +562,15 @@ export default function Home() {
         onMoveSong={handleMoveSong}
         onNextSong={handleNextSong}
         onPrevSong={handlePrevSong}
-        onImportSongs={handleImportSongs}
-        onExportSongs={handleExportSongs}
+        onExportActive={handleExportActive}
+        onExportAll={handleExportAll}
+        onImportFile={handleImportFile}
       />
 
-      {/* Footer Scorciatoie da Tastiera / Pedale Bluetooth */}
+      {/* Footer Scorciatoie */}
       <footer className="w-full text-center text-[11px] text-zinc-400 pt-3 flex flex-wrap justify-center gap-x-4 gap-y-1">
         <span><kbd className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300 font-mono text-[10px]">Spazio</kbd> Play/Stop</span>
-        <span><kbd className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300 font-mono text-[10px]">→</kbd> Brano Successivo</span>
+        <span><kbd className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300 font-mono text-[10px">→</kbd> Brano Successivo</span>
         <span><kbd className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300 font-mono text-[10px]">←</kbd> Brano Precedente</span>
         <span><kbd className="px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-300 font-mono text-[10px]">M</kbd> Toggle Mic</span>
       </footer>

@@ -4,6 +4,8 @@ export type Subdivision = 'quarter' | 'eighth' | 'sixteenth' | 'triplet';
 
 export type TimeSignature = '4/4' | '3/4' | '2/4' | '6/8' | '5/4' | '7/8' | '12/8';
 
+export type TrackerMode = 'acoustic' | 'electronic';
+
 export interface Song {
   id: string;
   title: string;
@@ -13,6 +15,12 @@ export interface Song {
   soundPreset: SoundPreset;
   notes?: string;
   colorTag?: string;
+}
+
+export interface Setlist {
+  id: string;
+  name: string;
+  songs: Song[];
 }
 
 export interface TrackerPoint {

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   ListMusic,
   Plus,
@@ -12,13 +12,22 @@ import {
   Upload,
   Check,
   X,
-  Play,
+  Copy,
   SkipBack,
   SkipForward,
+  FolderOpen,
 } from 'lucide-react';
-import { Song, SoundPreset, Subdivision, TimeSignature } from '@/types';
+import { Setlist, Song, SoundPreset, Subdivision, TimeSignature } from '@/types';
 
 interface SetlistDrawerProps {
+  setlists: Setlist[];
+  activeSetlistId: string;
+  onSelectSetlist: (id: string) => void;
+  onCreateSetlist: (name: string) => void;
+  onRenameSetlist: (id: string, newName: string) => void;
+  onDeleteSetlist: (id: string) => void;
+  onDuplicateSetlist: (id: string) => void;
+
   songs: Song[];
   currentSongIndex: number;
   onSelectSong: (index: number) => void;
@@ -28,11 +37,20 @@ interface SetlistDrawerProps {
   onMoveSong: (index: number, direction: 'up' | 'down') => void;
   onNextSong: () => void;
   onPrevSong: () => void;
-  onImportSongs: (jsonStr: string) => boolean;
-  onExportSongs: () => void;
+
+  onExportActive: () => void;
+  onExportAll: () => void;
+  onImportFile: (content: string) => boolean;
 }
 
 export const SetlistDrawer: React.FC<SetlistDrawerProps> = ({
+  setlists,
+  activeSetlistId,
+  onSelectSetlist,
+  onCreateSetlist,
+  onRenameSetlist,
+  onDeleteSetlist,
+  onDuplicateSetlist,
   songs,
   currentSongIndex,
   onSelectSong,
@@ -42,14 +60,20 @@ export const SetlistDrawer: React.FC<SetlistDrawerProps> = ({
   onMoveSong,
   onNextSong,
   onPrevSong,
-  onImportSongs,
-  onExportSongs,
+  onExportActive,
+  onExportAll,
+  onImportFile,
 }) => {
   const [isOpen, setIsOpen] = useState(false);
+  const [isManagingSetlists, setIsManagingSetlists] = useState(false);
+  const [newSetlistName, setNewSetlistName] = useState('');
   const [editingSong, setEditingSong] = useState<Song | null>(null);
-  const [isCreating, setIsCreating] = useState(false);
+  const [isCreatingSong, setIsCreatingSong] = useState(false);
+  const [importNotice, setImportNotice] = useState<string | null>(null);
 
-  // Form state
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  // Form State Brano
   const [formTitle, setFormTitle] = useState('');
   const [formBpm, setFormBpm] = useState(120);
   const [formTimeSig, setFormTimeSig] = useState<TimeSignature>('4/4');
@@ -58,9 +82,10 @@ export const SetlistDrawer: React.FC<SetlistDrawerProps> = ({
   const [formNotes, setFormNotes] = useState('');
   const [formColor, setFormColor] = useState('#10b981');
 
+  const activeSetlist = setlists.find((s) => s.id === activeSetlistId) || setlists[0];
   const currentSong = songs[currentSongIndex] || null;
 
-  const handleOpenCreate = () => {
+  const handleOpenCreateSong = () => {
     setFormTitle(`Brano ${songs.length + 1}`);
     setFormBpm(120);
     setFormTimeSig('4/4');
@@ -68,11 +93,11 @@ export const SetlistDrawer: React.FC<SetlistDrawerProps> = ({
     setFormPreset('woodblock');
     setFormNotes('');
     setFormColor('#10b981');
-    setIsCreating(true);
+    setIsCreatingSong(true);
     setEditingSong(null);
   };
 
-  const handleOpenEdit = (song: Song) => {
+  const handleOpenEditSong = (song: Song) => {
     setFormTitle(song.title);
     setFormBpm(song.bpm);
     setFormTimeSig(song.timeSignature);
@@ -81,10 +106,10 @@ export const SetlistDrawer: React.FC<SetlistDrawerProps> = ({
     setFormNotes(song.notes || '');
     setFormColor(song.colorTag || '#10b981');
     setEditingSong(song);
-    setIsCreating(false);
+    setIsCreatingSong(false);
   };
 
-  const handleSaveForm = (e: React.FormEvent) => {
+  const handleSaveSongForm = (e: React.FormEvent) => {
     e.preventDefault();
     if (!formTitle.trim()) return;
 
@@ -110,30 +135,193 @@ export const SetlistDrawer: React.FC<SetlistDrawerProps> = ({
         notes: formNotes.trim(),
         colorTag: formColor,
       });
-      setIsCreating(false);
+      setIsCreatingSong(false);
     }
+  };
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const content = event.target?.result as string;
+      if (content) {
+        const ok = onImportFile(content);
+        if (ok) {
+          setImportNotice('✓ Scaletta importata con successo!');
+        } else {
+          setImportNotice('✗ Formato JSON non valido.');
+        }
+        setTimeout(() => setImportNotice(null), 3500);
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
   };
 
   return (
     <div className="w-full bg-zinc-900/90 backdrop-blur-md rounded-2xl border border-zinc-800 p-4 shadow-xl flex flex-col gap-3">
-      {/* Barra Live Rapida (Sempre visibile per il cambio brano sul palco) */}
+      {/* Intestazione Scaletta & Selettore Scaletta Attiva */}
       <div className="flex items-center justify-between gap-2 flex-wrap">
-        <div className="flex items-center gap-2">
-          <ListMusic className="w-5 h-5 text-cyan-400" />
-          <h2 className="text-sm font-semibold tracking-wider uppercase text-zinc-200">
-            Scaletta Live ({currentSongIndex + 1}/{songs.length})
-          </h2>
+        <div className="flex items-center gap-2 flex-1 min-w-[200px]">
+          <ListMusic className="w-5 h-5 text-cyan-400 shrink-0" />
+          <select
+            value={activeSetlistId}
+            onChange={(e) => onSelectSetlist(e.target.value)}
+            className="bg-zinc-950 border border-zinc-700/80 rounded-xl px-2.5 py-1.5 text-xs font-bold text-white focus:outline-none focus:border-cyan-400 max-w-full"
+          >
+            {setlists.map((s) => (
+              <option key={s.id} value={s.id}>
+                {s.name} ({s.songs.length} brani)
+              </option>
+            ))}
+          </select>
         </div>
 
-        <button
-          onClick={() => setIsOpen(!isOpen)}
-          className="text-xs px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition-colors font-medium"
-        >
-          {isOpen ? 'Chiudi Scaletta' : 'Modifica Scaletta'}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setIsManagingSetlists(!isManagingSetlists)}
+            className="text-xs px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-medium flex items-center gap-1"
+          >
+            <FolderOpen className="w-3.5 h-3.5" /> Gestisci Scalette
+          </button>
+          <button
+            onClick={() => setIsOpen(!isOpen)}
+            className="text-xs px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-medium"
+          >
+            {isOpen ? 'Chiudi' : 'Modifica Brani'}
+          </button>
+        </div>
       </div>
 
-      {/* Controller Cambio Brano Rapido (Extra Large per il Live) */}
+      {importNotice && (
+        <div className="p-2 rounded-xl bg-cyan-950/80 border border-cyan-500/50 text-cyan-200 text-xs text-center font-semibold">
+          {importNotice}
+        </div>
+      )}
+
+      {/* Pannello Gestione Scalette Multiple (Crea, Rinomina, Elimina, Import/Export) */}
+      {isManagingSetlists && (
+        <div className="p-3.5 rounded-xl bg-zinc-950 border border-zinc-800 flex flex-col gap-3 animate-in fade-in duration-150">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-bold uppercase text-zinc-300">
+              Archivio Scalette Band
+            </span>
+            <div className="flex items-center gap-2">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".json"
+                onChange={handleFileUpload}
+                className="hidden"
+              />
+              <button
+                onClick={() => fileInputRef.current?.click()}
+                className="px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs flex items-center gap-1"
+              >
+                <Upload className="w-3.5 h-3.5" /> Importa JSON
+              </button>
+              <button
+                onClick={onExportActive}
+                className="px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs flex items-center gap-1"
+              >
+                <Download className="w-3.5 h-3.5" /> Esporta Questa
+              </button>
+              <button
+                onClick={onExportAll}
+                className="px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-xs flex items-center gap-1"
+                title="Backup di tutte le scalette"
+              >
+                <Download className="w-3.5 h-3.5" /> Backup Tutto
+              </button>
+            </div>
+          </div>
+
+          {/* Crea Nuova Scaletta */}
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              placeholder="Nome nuova scaletta (es. Tour Estate)"
+              value={newSetlistName}
+              onChange={(e) => setNewSetlistName(e.target.value)}
+              className="flex-1 px-3 py-1.5 rounded-lg bg-zinc-900 border border-zinc-700 text-xs text-white focus:outline-none focus:border-cyan-400"
+            />
+            <button
+              onClick={() => {
+                if (newSetlistName.trim()) {
+                  onCreateSetlist(newSetlistName.trim());
+                  setNewSetlistName('');
+                }
+              }}
+              className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold flex items-center gap-1"
+            >
+              <Plus className="w-3.5 h-3.5" /> Crea
+            </button>
+          </div>
+
+          {/* Elenco Scalette Esistenti */}
+          <div className="flex flex-col gap-1.5 max-h-40 overflow-y-auto pt-1">
+            {setlists.map((s) => (
+              <div
+                key={s.id}
+                className={`flex items-center justify-between p-2 rounded-xl border text-xs ${
+                  s.id === activeSetlistId
+                    ? 'bg-cyan-950/40 border-cyan-500/50 text-white'
+                    : 'bg-zinc-900 border-zinc-800 text-zinc-300'
+                }`}
+              >
+                <span
+                  onClick={() => onSelectSetlist(s.id)}
+                  className="cursor-pointer font-semibold truncate flex-1"
+                >
+                  {s.name} ({s.songs.length} brani)
+                </span>
+
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => onDuplicateSetlist(s.id)}
+                    title="Duplica scaletta"
+                    className="p-1 text-zinc-400 hover:text-cyan-300"
+                  >
+                    <Copy className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    onClick={() => {
+                      const newN = prompt('Rinomina scaletta:', s.name);
+                      if (newN && newN.trim()) {
+                        onRenameSetlist(s.id, newN.trim());
+                      }
+                    }}
+                    title="Rinomina"
+                    className="p-1 text-zinc-400 hover:text-cyan-300"
+                  >
+                    <Edit2 className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    onClick={() => {
+                      if (setlists.length <= 1) {
+                        alert('Devi mantenere almeno una scaletta.');
+                        return;
+                      }
+                      if (confirm(`Eliminare la scaletta "${s.name}"?`)) {
+                        onDeleteSetlist(s.id);
+                      }
+                    }}
+                    disabled={setlists.length <= 1}
+                    title="Elimina"
+                    className="p-1 text-zinc-400 hover:text-rose-400 disabled:opacity-20"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Controller Cambio Brano Rapido sul Palco */}
       <div className="flex items-center justify-between gap-2 p-2.5 rounded-xl bg-zinc-950/80 border border-zinc-800">
         <button
           onClick={onPrevSong}
@@ -183,32 +371,25 @@ export const SetlistDrawer: React.FC<SetlistDrawerProps> = ({
         </button>
       </div>
 
-      {/* Lista Brani Completa e Gestione (Mostrata al click) */}
+      {/* Lista Brani della Scaletta Attiva */}
       {isOpen && (
         <div className="flex flex-col gap-3 pt-2 border-t border-zinc-800/80 animate-in fade-in duration-200">
           <div className="flex items-center justify-between gap-2">
-            <span className="text-xs text-zinc-400 font-medium">Tutti i brani della scaletta:</span>
-            <div className="flex items-center gap-1.5">
-              <button
-                onClick={onExportSongs}
-                title="Esporta scaletta JSON"
-                className="p-1.5 rounded-lg bg-zinc-800 text-zinc-400 hover:text-zinc-200 text-xs flex items-center gap-1"
-              >
-                <Download className="w-3.5 h-3.5" /> Esporta
-              </button>
-              <button
-                onClick={handleOpenCreate}
-                className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold flex items-center gap-1 transition-colors"
-              >
-                <Plus className="w-3.5 h-3.5" /> Aggiungi Brano
-              </button>
-            </div>
+            <span className="text-xs text-zinc-400 font-medium">
+              Brani in: <strong className="text-white">{activeSetlist?.name}</strong>
+            </span>
+            <button
+              onClick={handleOpenCreateSong}
+              className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold flex items-center gap-1 transition-colors"
+            >
+              <Plus className="w-3.5 h-3.5" /> Aggiungi Brano
+            </button>
           </div>
 
           {/* Form Crea / Modifica Brano */}
-          {(isCreating || editingSong) && (
+          {(isCreatingSong || editingSong) && (
             <form
-              onSubmit={handleSaveForm}
+              onSubmit={handleSaveSongForm}
               className="p-3.5 rounded-xl bg-zinc-950 border border-zinc-700/80 flex flex-col gap-3 shadow-lg"
             >
               <div className="flex items-center justify-between">
@@ -218,7 +399,7 @@ export const SetlistDrawer: React.FC<SetlistDrawerProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    setIsCreating(false);
+                    setIsCreatingSong(false);
                     setEditingSong(null);
                   }}
                   className="text-zinc-500 hover:text-zinc-300 p-1"
@@ -305,14 +486,12 @@ export const SetlistDrawer: React.FC<SetlistDrawerProps> = ({
               </div>
 
               <div>
-                <label className="text-[11px] text-zinc-400 block mb-1">
-                  Note di Palco (cue/attacchi)
-                </label>
+                <label className="text-[11px] text-zinc-400 block mb-1">Note di Palco</label>
                 <input
                   type="text"
                   value={formNotes}
                   onChange={(e) => setFormNotes(e.target.value)}
-                  placeholder="es. Attacco chitarra 4 battute, finale rallentando"
+                  placeholder="es. Attacco chitarra 4 battute"
                   className="w-full px-2.5 py-1.5 rounded-lg bg-zinc-900 border border-zinc-700 text-white text-xs focus:outline-none focus:border-cyan-400"
                 />
               </div>
@@ -321,7 +500,7 @@ export const SetlistDrawer: React.FC<SetlistDrawerProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    setIsCreating(false);
+                    setIsCreatingSong(false);
                     setEditingSong(null);
                   }}
                   className="px-3 py-1.5 rounded-lg bg-zinc-800 text-zinc-300 text-xs"
@@ -396,7 +575,7 @@ export const SetlistDrawer: React.FC<SetlistDrawerProps> = ({
                       <ChevronDown className="w-3.5 h-3.5" />
                     </button>
                     <button
-                      onClick={() => handleOpenEdit(song)}
+                      onClick={() => handleOpenEditSong(song)}
                       className="p-1 text-zinc-400 hover:text-cyan-400"
                     >
                       <Edit2 className="w-3.5 h-3.5" />

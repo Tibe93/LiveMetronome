@@ -3,7 +3,12 @@
 ## Obiettivo
 Consentire alla band di memorizzare l'intera scaletta del concerto o delle prove, passando rapidamente da un brano al successivo con un solo tocco, caricando istantaneamente BPM target, metrica, suddivisione e note di palco.
 
-## Modello Dati Brano
+## Modello Dati Scaletta e Brano
+Una scaletta (`Setlist`) contiene:
+- `id`: stringa univoca
+- `name`: nome della scaletta (es. "Tour Live 2026", "Prove Rock", "Acoustic Set")
+- `songs`: array di `Song`
+
 Ogni brano nella scaletta contiene:
 - `id`: stringa univoca (UUID/timestamp)
 - `title`: nome del brano (es. "Song 1", "Highway to Hell")
@@ -14,6 +19,11 @@ Ogni brano nella scaletta contiene:
 - `bars`: numero di battute previste o conteggio preliminare (opzionale)
 - `notes`: note per il musicista (es. "Attacco solo chitarra per 4 battute", "Finale rallentando")
 - `colorTag`: colore identificativo per rapida distinzione visiva
+
+## Gestione Scalette Multiple
+- Menu a tendina per selezionare rapidamente la scaletta attiva durante prove o concerti.
+- Creazione nuova scaletta, rinomina, duplicazione e cancellazione.
+- Esportazione ed importazione flessibile: possibilità di scaricare/caricare singole scalette o l'intero archivio in formato `.json`.
 
 ## Controlli Live sul Palco
 - **Pulsanti Extra-Large "Prev" e "Next"**: Facilmente cliccabili anche con lo smartphone posizionato sull'asta del microfono o sul supporto batteria.

@@ -9,12 +9,7 @@ class MetronomeEngine {
   private soundPreset: SoundPreset = 'woodblock';
   private volume: number = 0.95;
 
-  // Catena Audio di Uscita ad Alto Volume & Anti-Ducking
-  private masterBus: GainNode | null = null;
-  private compressorNode: DynamicsCompressorNode | null = null;
-  private boostNode: GainNode | null = null;
-
-  // Elemento Audio HTML5 per bypassare l'interruttore silenzioso su iOS (Session Category: Playback)
+  // Elemento Audio HTML5 silenzioso di background (fire-and-forget per bypass interruttore silenzioso iOS)
   private silentAudioElement: HTMLAudioElement | null = null;
 
   // Lookahead scheduler
@@ -34,44 +29,16 @@ class MetronomeEngine {
     if (!this.audioCtx) {
       const AudioCtxClass = window.AudioContext || (window as any).webkitAudioContext;
       this.audioCtx = new AudioCtxClass();
-      this.setupMasterBus();
     }
     if (this.audioCtx.state === 'suspended') {
-      this.audioCtx.resume();
+      this.audioCtx.resume().catch(() => {});
     }
     return this.audioCtx;
   }
 
-  private setupMasterBus() {
-    if (!this.audioCtx) return;
-
-    // Master Gain iniziale
-    this.masterBus = this.audioCtx.createGain();
-    this.masterBus.gain.setValueAtTime(this.volume, this.audioCtx.currentTime);
-
-    // Dynamics Compressor per rendere il click percussivo, denso e punchy
-    this.compressorNode = this.audioCtx.createDynamicsCompressor();
-    this.compressorNode.threshold.setValueAtTime(-14, this.audioCtx.currentTime);
-    this.compressorNode.knee.setValueAtTime(4, this.audioCtx.currentTime);
-    this.compressorNode.ratio.setValueAtTime(12, this.audioCtx.currentTime);
-    this.compressorNode.attack.setValueAtTime(0.001, this.audioCtx.currentTime);
-    this.compressorNode.release.setValueAtTime(0.035, this.audioCtx.currentTime);
-
-    // Boost Gain Node per contrastare l'attenuazione di iOS quando il microfono è attivo
-    this.boostNode = this.audioCtx.createGain();
-    // 2.6x di boost del volume
-    this.boostNode.gain.setValueAtTime(2.6, this.audioCtx.currentTime);
-
-    // Connessione: masterBus -> compressor -> boost -> destination
-    this.masterBus.connect(this.compressorNode);
-    this.compressorNode.connect(this.boostNode);
-    this.boostNode.connect(this.audioCtx.destination);
-  }
-
   /**
-   * Bypass interruttore Silenzioso iOS:
-   * Avvia una traccia inaudibile HTML5 che forza Safari a trattare la pagina
-   * in modalità 'Playback', ignorando il tasto silenzioso hardware di iPhone.
+   * Sblocco Audio per iOS Safari:
+   * 100% sincrono nell'handler utente, zero blocchi asincroni.
    */
   public async unlockAudio(): Promise<boolean> {
     try {
@@ -80,31 +47,28 @@ class MetronomeEngine {
         await ctx.resume();
       }
 
-      if (typeof window !== 'undefined' && !this.silentAudioElement) {
-        // Breve file WAV silenzioso in base64
-        const silenceDataUri =
-          'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
-        this.silentAudioElement = new Audio(silenceDataUri);
-        this.silentAudioElement.loop = true;
-        (this.silentAudioElement as any).playsInline = true;
-        this.silentAudioElement.setAttribute('playsinline', '');
-        this.silentAudioElement.setAttribute('webkit-playsinline', '');
-      }
-
-      if (this.silentAudioElement) {
-        try {
-          await this.silentAudioElement.play();
-        } catch {
-          // Ignora se non necessario
-        }
-      }
-
-      // Piccolo buffer di sblocco Web Audio
+      // Suono silenzioso Web Audio immediato per attivare l'hardware audio
       const buffer = ctx.createBuffer(1, 1, 22050);
       const source = ctx.createBufferSource();
       source.buffer = buffer;
       source.connect(ctx.destination);
       source.start(0);
+
+      // Fire-and-forget per audio element (bypass silent switch senza bloccare l'esecuzione)
+      if (typeof window !== 'undefined' && !this.silentAudioElement) {
+        const silenceDataUri =
+          'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA';
+        const audio = new Audio(silenceDataUri);
+        audio.loop = true;
+        (audio as any).playsInline = true;
+        audio.setAttribute('playsinline', '');
+        audio.setAttribute('webkit-playsinline', '');
+        this.silentAudioElement = audio;
+      }
+
+      if (this.silentAudioElement) {
+        this.silentAudioElement.play().catch(() => {});
+      }
 
       return true;
     } catch (err) {
@@ -142,9 +106,6 @@ class MetronomeEngine {
 
   public setVolume(vol: number) {
     this.volume = Math.max(0, Math.min(1, vol));
-    if (this.masterBus && this.audioCtx) {
-      this.masterBus.gain.setValueAtTime(this.volume, this.audioCtx.currentTime);
-    }
   }
 
   public getIsRunning(): boolean {
@@ -187,10 +148,15 @@ class MetronomeEngine {
   public start() {
     if (this.isRunning) return;
     const ctx = this.getAudioContext();
+    if (ctx.state === 'suspended') {
+      ctx.resume().catch(() => {});
+    }
+
     this.isRunning = true;
     this.currentBeatInMeasure = 0;
     this.currentSubdivisionInBeat = 0;
-    this.nextNoteTime = ctx.currentTime + 0.05;
+    // Sincronizza al tempo corrente reale di AudioContext
+    this.nextNoteTime = ctx.currentTime + 0.04;
 
     this.timerId = window.setInterval(() => {
       this.scheduler();
@@ -215,6 +181,16 @@ class MetronomeEngine {
 
   private scheduler() {
     const ctx = this.getAudioContext();
+    if (ctx.state === 'suspended') {
+      ctx.resume().catch(() => {});
+    }
+
+    // Protezione per Safari iOS: se il clock hardware audio si è risvegliato in ritardo
+    // e nextNoteTime è rimasto indietro, riallinealo istantaneamente
+    if (this.nextNoteTime < ctx.currentTime) {
+      this.nextNoteTime = ctx.currentTime + 0.02;
+    }
+
     const beatsPerMeasure = this.getBeatsPerMeasure();
     const subFactor = this.getSubdivisionFactor();
 
@@ -273,16 +249,13 @@ class MetronomeEngine {
   }
 
   private playSynthesizedSound(ctx: AudioContext, time: number, isAccent: boolean, isSub: boolean) {
-    if (!this.masterBus) this.setupMasterBus();
-    const destinationBus = this.masterBus || ctx.destination;
-
+    // Connessione diretta a destination per la massima robustezza e zero overhead su iOS
     const noteGain = ctx.createGain();
-    noteGain.connect(destinationBus);
+    noteGain.connect(ctx.destination);
 
-    // Dinamica ad alta energia
-    const baseGain = isSub ? 0.45 : isAccent ? 1.4 : 1.0;
-    noteGain.gain.setValueAtTime(0.001, time);
-    noteGain.gain.exponentialRampToValueAtTime(baseGain, time + 0.001);
+    // Guadagno rinforzato (volume alto e chiaro, senza distorsione)
+    const baseGain = this.volume * (isSub ? 0.6 : isAccent ? 1.8 : 1.3);
+    noteGain.gain.setValueAtTime(baseGain, time);
 
     switch (this.soundPreset) {
       case 'woodblock': {
@@ -291,7 +264,7 @@ class MetronomeEngine {
 
         filter.type = 'bandpass';
         filter.frequency.setValueAtTime(isAccent ? 1400 : isSub ? 850 : 1100, time);
-        filter.Q.setValueAtTime(12, time);
+        filter.Q.setValueAtTime(10, time);
 
         osc.type = 'sine';
         osc.frequency.setValueAtTime(isAccent ? 1350 : isSub ? 800 : 1050, time);

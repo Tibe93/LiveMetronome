@@ -9,6 +9,9 @@ class MetronomeEngine {
   private soundPreset: SoundPreset = 'woodblock';
   private volume: number = 0.95;
 
+  // Master GainNode persistente — unico punto di controllo volume (funziona correttamente su iOS)
+  private masterGain: GainNode | null = null;
+
   // Elemento Audio HTML5 silenzioso di background (fire-and-forget per bypass interruttore silenzioso iOS)
   private silentAudioElement: HTMLAudioElement | null = null;
 
@@ -32,6 +35,12 @@ class MetronomeEngine {
     }
     if (this.audioCtx.state === 'suspended') {
       this.audioCtx.resume().catch(() => {});
+    }
+    // Crea il master gain se non esiste ancora o se l'audioCtx è stato ricreato
+    if (!this.masterGain || this.masterGain.context !== this.audioCtx) {
+      this.masterGain = this.audioCtx.createGain();
+      this.masterGain.gain.setValueAtTime(this.volume * 2.0, this.audioCtx.currentTime);
+      this.masterGain.connect(this.audioCtx.destination);
     }
     return this.audioCtx;
   }
@@ -106,6 +115,11 @@ class MetronomeEngine {
 
   public setVolume(vol: number) {
     this.volume = Math.max(0, Math.min(1, vol));
+    // Aggiorna il master gain immediatamente se esiste (garantisce funzionamento su iOS)
+    if (this.masterGain && this.audioCtx) {
+      // Boost 2x per compensare l'attenuazione hardware iOS
+      this.masterGain.gain.setValueAtTime(this.volume * 2.0, this.audioCtx.currentTime);
+    }
   }
 
   public getIsRunning(): boolean {
@@ -249,13 +263,17 @@ class MetronomeEngine {
   }
 
   private playSynthesizedSound(ctx: AudioContext, time: number, isAccent: boolean, isSub: boolean) {
-    // Connessione diretta a destination per la massima robustezza e zero overhead su iOS
+    // Connessione tramite masterGain persistente per controllo volume corretto su iOS
+    // Il masterGain gestisce il volume utente, il noteGain gestisce solo accent/subdivision
+    if (!this.masterGain) {
+      this.getAudioContext(); // assicura che masterGain venga creato
+    }
     const noteGain = ctx.createGain();
-    noteGain.connect(ctx.destination);
+    noteGain.connect(this.masterGain || ctx.destination);
 
-    // Guadagno rinforzato (volume alto e chiaro, senza distorsione)
-    const baseGain = this.volume * (isSub ? 0.6 : isAccent ? 1.8 : 1.3);
-    noteGain.gain.setValueAtTime(baseGain, time);
+    // Scaling relativo per accenti e suddivisioni (volume assoluto è nel masterGain)
+    const accentScale = isSub ? 0.55 : isAccent ? 1.4 : 1.0;
+    noteGain.gain.setValueAtTime(accentScale, time);
 
     switch (this.soundPreset) {
       case 'woodblock': {
